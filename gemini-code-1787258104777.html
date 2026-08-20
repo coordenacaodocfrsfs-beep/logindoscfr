@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Painel - SCFR</title>
+    <style>
+        :root { --primary: #1a73e8; --text: #202124; --border: #dadce0; }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Roboto, sans-serif; }
+        
+        body, html { width: 100%; height: 100%; background-color: #f0f2f5; display: flex; justify-content: center; align-items: center; overflow: hidden; }
+        
+        /* Animações de Entrada */
+        @keyframes fadeInScale {
+            0% { opacity: 0; transform: translateY(20px) scale(0.97); }
+            100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        .card { 
+            background: white; 
+            padding: 48px 40px; 
+            border-radius: 16px; 
+            border: 1px solid var(--border); 
+            width: 100%; 
+            max-width: 440px; 
+            box-shadow: 0 12px 32px rgba(0,0,0,0.08); 
+            text-align: center; 
+            animation: fadeInScale 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        h2 { font-size: 24px; color: var(--text); margin-bottom: 8px; font-weight: 500; }
+        p { color: #5f6368; margin-bottom: 24px; font-size: 15px; }
+        
+        .input-box { width: 100%; padding: 14px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 20px; font-size: 16px; outline: none; transition: all 0.2s; text-align: left; }
+        .input-box:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(26,115,232,0.15); }
+        
+        .btn { background: var(--primary); color: white; padding: 12px 24px; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 15px; width: 100%; transition: background 0.2s, transform 0.1s; text-decoration: none; display: inline-block; }
+        .btn:hover { background: #1557b0; }
+        .btn:active { transform: scale(0.98); }
+        .btn-danger { background: #d93025; margin-top: 10px; }
+        .btn-danger:hover { background: #b31412; }
+        
+        .account-item { display: flex; align-items: center; padding: 16px; border: 1px solid #eee; border-radius: 10px; margin-bottom: 12px; cursor: pointer; text-align: left; transition: all 0.2s; }
+        .account-item:hover { background: #f8f9fa; border-color: var(--primary); transform: translateY(-1px); }
+        .icon { width: 40px; height: 40px; background: var(--primary); border-radius: 50%; color: white; display: flex; align-items: center; justify-content: center; margin-right: 15px; font-weight: bold; font-size: 18px; flex-shrink: 0; }
+        
+        .user-badge { background: #f8f9fa; border: 1px solid #dadce0; border-radius: 10px; padding: 16px; margin-bottom: 24px; text-align: left; }
+        .user-name { font-weight: 600; color: #202124; font-size: 16px; display: block; }
+        .user-email { color: #5f6368; font-size: 14px; margin-top: 4px; display: block; }
+        
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <!-- TELA 1: ESCOLHER CONTA SALVA -->
+    <div id="view-accounts" class="card hidden">
+        <h2>Escolha uma conta</h2>
+        <p>Para continuar no sistema SCFR</p>
+        <div id="list-container"></div>
+        <div class="account-item" onclick="showStep('view-login')">
+            <div class="icon">+</div> <div><strong>Usar outra conta</strong></div>
+        </div>
+    </div>
+
+    <!-- TELA 2: DIGITAR SENHA -->
+    <div id="view-login" class="card hidden" style="text-align: left;">
+        <h2>Fazer login</h2>
+        <p>Digite sua senha para continuar</p>
+        <input type="email" id="email" class="input-box" placeholder="E-mail">
+        <input type="password" id="password" class="input-box" placeholder="Senha">
+        <button class="btn" style="text-align: center;" onclick="handleLogin()">Entrar</button>
+    </div>
+
+    <!-- TELA 3: PAINEL DE CONTROLE -->
+    <div id="view-dashboard" class="card hidden">
+        <h2>Bem-vindo ao Sistema!</h2>
+        <p>Sua sessão está ativa neste dispositivo.</p>
+        
+        <div class="user-badge">
+            <span class="user-name" id="display-name">Nome do Usuário</span>
+            <span class="user-email" id="display-email">email@exemplo.com</span>
+        </div>
+
+        <a href="https://sites.google.com/view/scfr-inicio?usp=sharing" class="btn" style="margin-bottom: 12px; box-sizing: border-box;">Abrir Sistema</a>
+        <button class="btn btn-danger" onclick="handleLogout()">Sair da Conta</button>
+    </div>
+
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+
+    const firebaseConfig = {
+        apiKey: "AIzaSyDO6SL7Sm6yXEV3IckIDgfNg6jNQigCb4Q",
+        authDomain: "login-do-scfr.firebaseapp.com",
+        databaseURL: "https://login-do-scfr-default-rtdb.firebaseio.com",
+        projectId: "login-do-scfr",
+        storageBucket: "login-do-scfr.firebasestorage.app",
+        messagingSenderId: "642993884940",
+        appId: "1:642993884940:web:9322ecc005cb9c5d29c329",
+        measurementId: "G-DEF05FDHG1"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+
+    const nomesUsuarios = {
+        "eventosdehenrique@gmail.com": "Henrique Rocha"
+    };
+
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('logout') === 'true') {
+        signOut(auth).then(() => {
+            window.location.href = window.location.pathname;
+        });
+    }
+
+    window.showStep = (step) => {
+        document.getElementById('view-accounts').classList.add('hidden');
+        document.getElementById('view-login').classList.add('hidden');
+        document.getElementById('view-dashboard').classList.add('hidden');
+        
+        const target = document.getElementById(step);
+        target.classList.remove('hidden');
+    }
+
+    window.handleLogin = async () => {
+        const email = document.getElementById('email').value.trim();
+        const pass = document.getElementById('password').value.trim();
+        
+        if (!email || !pass) {
+            alert("Preencha o e-mail e la senha.");
+            return;
+        }
+
+        try {
+            await signInWithEmailAndPassword(auth, email, pass);
+            let accounts = JSON.parse(localStorage.getItem('saved_accounts') || '[]');
+            if(!accounts.includes(email)) {
+                accounts.push(email);
+                localStorage.setItem('saved_accounts', JSON.stringify(accounts));
+            }
+        } catch(e) { 
+            alert("Erro ao entrar: " + e.message); 
+        }
+    }
+
+    window.handleLogout = async () => {
+        await signOut(auth);
+        location.reload();
+    }
+
+    onAuthStateChanged(auth, (user) => {
+        if (user) {
+            const emailLogado = user.email;
+            const nomeFormatado = nomesUsuarios[emailLogado] || "Usuário";
+            
+            document.getElementById('display-name').innerText = nomeFormatado;
+            document.getElementById('display-email').innerText = `(${emailLogado})`;
+            
+            showStep('view-dashboard');
+        } else {
+            const accounts = JSON.parse(localStorage.getItem('saved_accounts') || '[]');
+            if (accounts.length > 0) {
+                const list = document.getElementById('list-container');
+                list.innerHTML = '';
+                accounts.forEach(acc => {
+                    const nomeAcc = nomesUsuarios[acc] || acc;
+                    list.innerHTML += `<div class="account-item" onclick="document.getElementById('email').value='${acc}'; showStep('view-login')">
+                        <div class="icon">${acc[0].toUpperCase()}</div><div><strong>${nomeAcc}</strong><br><small style="color:#5f6368">${acc}</small></div>
+                    </div>`;
+                });
+                showStep('view-accounts');
+            } else {
+                showStep('view-login');
+            }
+        }
+    });
+</script>
+</body>
+</html>
