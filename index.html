@@ -103,7 +103,6 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
 
-    // Lista de usuários cadastrados
     const nomesUsuarios = {
         "eventosdehenrique@gmail.com": "Henrique Rocha",
         "helena.crocha@cfrmail.com": "Helena da Costa Rocha"
@@ -125,11 +124,12 @@
         target.classList.remove('hidden');
     }
 
-    // Redirecionamento blindado para a página correta de cada usuário
+    // Redirecionamento com log no console para conferência
     window.irParaSistema = () => {
         const user = auth.currentUser;
         if (user) {
-            const emailAtual = user.email.trim().toLowerCase();
+            const emailAtual = user.email ? user.email.trim().toLowerCase() : "";
+            console.log("E-mail logado atualmente:", emailAtual);
             
             if (emailAtual === "helena.crocha@cfrmail.com") {
                 window.location.href = "https://sites.google.com/view/scfrhelena-/in%C3%ADcio";
@@ -167,7 +167,7 @@
 
     onAuthStateChanged(auth, (user) => {
         if (user) {
-            const emailLogado = user.email.trim().toLowerCase();
+            const emailLogado = user.email ? user.email.trim().toLowerCase() : "";
             const nomeFormatado = nomesUsuarios[emailLogado] || "Usuário";
             
             document.getElementById('display-name').innerText = nomeFormatado;
