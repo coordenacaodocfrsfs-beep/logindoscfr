@@ -10,7 +10,6 @@
         
         body, html { width: 100%; height: 100%; background-color: #f0f2f5; display: flex; justify-content: center; align-items: center; overflow: hidden; }
         
-        /* Animações de Entrada */
         @keyframes fadeInScale {
             0% { opacity: 0; transform: translateY(20px) scale(0.97); }
             100% { opacity: 1; transform: translateY(0) scale(1); }
@@ -82,7 +81,7 @@
             <span class="user-email" id="display-email">email@exemplo.com</span>
         </div>
 
-        <a href="https://sites.google.com/view/scfr-inicio?usp=sharing" class="btn" style="margin-bottom: 12px; box-sizing: border-box;">Abrir Sistema</a>
+        <button class="btn" style="margin-bottom: 12px;" onclick="irParaSistema()">Abrir Sistema</button>
         <button class="btn btn-danger" onclick="handleLogout()">Sair da Conta</button>
     </div>
 
@@ -104,8 +103,10 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
 
+    // Lista de usuários cadastrados
     const nomesUsuarios = {
-        "eventosdehenrique@gmail.com": "Henrique Rocha"
+        "eventosdehenrique@gmail.com": "Henrique Rocha",
+        "helena.crocha@cfrmail.com": "Helena da Costa Rocha"
     };
 
     const urlParams = new URLSearchParams(window.location.search);
@@ -124,12 +125,26 @@
         target.classList.remove('hidden');
     }
 
+    // Redirecionamento blindado para a página correta de cada usuário
+    window.irParaSistema = () => {
+        const user = auth.currentUser;
+        if (user) {
+            const emailAtual = user.email.trim().toLowerCase();
+            
+            if (emailAtual === "helena.crocha@cfrmail.com") {
+                window.location.href = "https://sites.google.com/view/scfrhelena-/in%C3%ADcio";
+            } else {
+                window.location.href = "https://sites.google.com/view/scfr-inicio?usp=sharing";
+            }
+        }
+    }
+
     window.handleLogin = async () => {
         const email = document.getElementById('email').value.trim();
         const pass = document.getElementById('password').value.trim();
         
         if (!email || !pass) {
-            alert("Preencha o e-mail e la senha.");
+            alert("Preencha o e-mail e a senha.");
             return;
         }
 
@@ -152,11 +167,11 @@
 
     onAuthStateChanged(auth, (user) => {
         if (user) {
-            const emailLogado = user.email;
+            const emailLogado = user.email.trim().toLowerCase();
             const nomeFormatado = nomesUsuarios[emailLogado] || "Usuário";
             
             document.getElementById('display-name').innerText = nomeFormatado;
-            document.getElementById('display-email').innerText = `(${emailLogado})`;
+            document.getElementById('display-email').innerText = `(${user.email})`;
             
             showStep('view-dashboard');
         } else {
@@ -165,7 +180,7 @@
                 const list = document.getElementById('list-container');
                 list.innerHTML = '';
                 accounts.forEach(acc => {
-                    const nomeAcc = nomesUsuarios[acc] || acc;
+                    const nomeAcc = nomesUsuarios[acc.toLowerCase()] || acc;
                     list.innerHTML += `<div class="account-item" onclick="document.getElementById('email').value='${acc}'; showStep('view-login')">
                         <div class="icon">${acc[0].toUpperCase()}</div><div><strong>${nomeAcc}</strong><br><small style="color:#5f6368">${acc}</small></div>
                     </div>`;
