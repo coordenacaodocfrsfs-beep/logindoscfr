@@ -57,6 +57,8 @@
         .system-message { margin:0 0 14px; padding:11px 12px; border-radius:8px; font-size:14px; background:#eef4ff; color:#174ea6; text-align:left; }
         .btn-secondary { background:#5f6368; margin-top:9px; }
         .btn-phone { background:#0f766e; margin-top:9px; }
+        .secret-panel { margin-top:14px; padding:14px; border:1px solid #cbd5e1; border-radius:12px; background:#f8fafc; text-align:left; }
+        .secret-panel input { width:100%; padding:12px; margin:8px 0; border:1px solid #cbd5e1; border-radius:8px; font-size:16px; }
         .phone-panel { margin-top:14px; padding:14px; border:1px solid #cbd5e1; border-radius:12px; background:#f8fafc; text-align:center; }
         .phone-panel p { font-size:13px; line-height:1.45; margin:8px 0; }
         #phone-qr { display:flex; justify-content:center; align-items:center; padding:12px; background:#fff; border-radius:8px; min-height:40px; overflow-wrap:anywhere; }
@@ -177,18 +179,80 @@
       return Array.from(result.descriptor);
     }
     async function completeLogin(user) {
-      const key = localKey('successes', user.email);
-      let count = Number(localStorage.getItem(key) || 0) + 1;
-      localStorage.setItem(key, String(count));
-      const failures = Number(localStorage.getItem(localKey('failures', user.email)) || 0);
-      let profile;
-      try { const snap = await get(ref(db, `faceProfiles/${user.uid}`)); profile = snap.exists() ? snap.val() : null; }
-      catch(e) { await signOut(auth); throw new Error('Não foi possível consultar o cadastro facial no Firebase. Verifique as regras de acesso.'); }
-      const mustVerify = count % 5 === 0 || failures >= 2;
-      if (!profile || !Array.isArray(profile.descriptor)) { await startFaceFlow(user, 'register'); return; }
-      if (mustVerify) { await startFaceFlow(user, 'verify'); return; }
-      showDashboard(user);
+      // Cada login exige uma verificação: rosto ou código secreto.
+      const email = (user.email || '').toLowerCase();
+      pendingUser = user;
+      faceEmail = email;
+      faceMode = 'verify';
+      document.getElementById('face-title').textContent = 'Confirme sua identidade';
+      document.getElementById('face-description').textContent = 'Para entrar no SCFR, conclua uma das opções abaixo.';
+      document.getElementById('face-modal').classList.remove('hidden');
+      document.getElementById('view-accounts').classList.add('hidden');
+      document.getElementById('view-login').classList.add('hidden');
+      document.getElementById('view-dashboard').classList.add('hidden');
+      document.getElementById('secret-panel').classList.add('hidden');
+      document.getElementById('phone-panel').classList.add('hidden');
+      setFaceMessage('Escolha reconhecimento facial ou código secreto. Uma opção é obrigatória.');
+      // Tenta abrir a câmera automaticamente; se falhar, o código secreto continua disponível.
+      try {
+        await loadFaceModels();
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('Este navegador não disponibiliza câmera.');
+        cameraStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}, audio:false});
+        const video = document.getElementById('face-video'); video.srcObject = cameraStream;
+        await video.play();
+        setFaceMessage('Escolha uma opção. Para reconhecimento facial, deixe o rosto iluminado e centralizado.');
+      } catch (e) {
+        console.warn('Câmera indisponível; código secreto pode ser usado:', e);
+        setFaceMessage('A câmera não está disponível neste dispositivo. Use o código secreto ou abra esta página no telefone.');
+      }
     }
+    async function hashSecret(value) {
+      const bytes = new TextEncoder().encode(value);
+      const digest = await crypto.subtle.digest('SHA-256', bytes);
+      return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2,'0')).join('');
+    }
+    window.mostrarOpcaoCodigo = async () => {
+      document.getElementById('secret-panel').classList.remove('hidden');
+      document.getElementById('phone-panel').classList.add('hidden');
+      const user = pendingUser || auth.currentUser;
+      if (!user) { setFaceMessage('Sessão expirada. Entre novamente.'); return; }
+      try {
+        const snap = await get(ref(db, `secretCodes/${user.uid}`));
+        const exists = snap.exists() && typeof snap.val().hash === 'string';
+        document.getElementById('secret-code-title').textContent = exists ? 'Digite seu código secreto' : 'Crie seu código secreto';
+        document.getElementById('secret-code-help').textContent = exists ? 'Digite o código que você cadastrou anteriormente.' : 'Primeiro acesso: crie um código com pelo menos 8 caracteres. Guarde-o em local seguro.';
+        document.getElementById('secret-code-confirm').classList.toggle('hidden', exists);
+        document.getElementById('secret-code-input').value = '';
+        document.getElementById('secret-code-confirm').value = '';
+      } catch (e) {
+        setFaceMessage('Não foi possível consultar o código secreto no Firebase. Confira as regras do banco de dados.');
+      }
+    };
+    window.confirmarCodigoSecreto = async () => {
+      const btn = document.getElementById('secret-code-submit');
+      btn.disabled = true;
+      try {
+        const user = pendingUser || auth.currentUser;
+        if (!user) throw new Error('Sessão expirada. Entre novamente.');
+        const code = document.getElementById('secret-code-input').value;
+        const confirm = document.getElementById('secret-code-confirm').value;
+        if (code.length < 8) throw new Error('Use um código secreto com pelo menos 8 caracteres.');
+        const codeRef = ref(db, `secretCodes/${user.uid}`);
+        const snap = await get(codeRef);
+        if (!snap.exists() || typeof snap.val().hash !== 'string') {
+          if (code !== confirm) throw new Error('Os códigos não coincidem. Digite e confirme o mesmo código.');
+          await set(codeRef, { hash: await hashSecret(code), updatedAt: Date.now() });
+          setFaceMessage('Código secreto cadastrado. Acesso autorizado.');
+        } else {
+          if (await hashSecret(code) !== snap.val().hash) throw new Error('Código secreto incorreto. Tente novamente.');
+          setFaceMessage('Código confirmado. Acesso autorizado.');
+        }
+        localStorage.setItem(localKey('faceRequired', user.email), 'false');
+        localStorage.setItem(localKey('failures', user.email), '0');
+        showDashboard(user);
+      } catch(e) { setFaceMessage(e.message || 'Não foi possível validar o código secreto.'); }
+      finally { btn.disabled = false; }
+    };
     function showDashboard(user) {
       stopFaceCamera(); document.getElementById('face-modal').classList.add('hidden');
       const email = (user.email || '').trim().toLowerCase();
@@ -196,7 +260,17 @@
       document.getElementById('display-email').innerText = `(${user.email})`;
       showStep('view-dashboard');
     }
-    window.cancelarRosto = async () => { stopFaceCamera(); document.getElementById('face-modal').classList.add('hidden'); if (auth.currentUser) await signOut(auth); pendingUser = null; showStep('view-login'); };
+    window.cancelarRosto = async () => {
+      const email = faceEmail || (pendingUser && pendingUser.email) || (auth.currentUser && auth.currentUser.email) || '';
+      if (email) localStorage.setItem(localKey('faceRequired', email), 'true');
+      stopFaceCamera();
+      document.getElementById('face-modal').classList.add('hidden');
+      document.getElementById('view-dashboard').classList.add('hidden');
+      pendingUser = null;
+      try { if (auth.currentUser) await signOut(auth); } catch (e) { console.error('Falha ao encerrar sessão:', e); }
+      showStep('view-login');
+      showLoginMessage('A verificação facial é obrigatória para continuar. Entre novamente e conclua a verificação; cancelar não libera o acesso.');
+    };
     window.confirmarRosto = async () => {
       const button = document.getElementById('face-action'); button.disabled = true;
       try {
@@ -208,10 +282,17 @@
         if (faceMode === 'register') {
           await set(profileRef, { descriptor, email: user.email || '', createdAt: Date.now(), method: 'face-api-descriptor' });
           localStorage.setItem(localKey('successes', user.email), '0');
+          localStorage.setItem(localKey('faceRequired', user.email), 'false');
+          localStorage.setItem(localKey('failures', user.email), '0');
           showDashboard(user); return;
         }
         const snap = await get(profileRef);
-        if (!snap.exists() || !Array.isArray(snap.val().descriptor)) throw new Error('Cadastro facial não encontrado. Entre em contato com a coordenação.');
+        if (!snap.exists() || !Array.isArray(snap.val().descriptor)) {
+          await set(profileRef, { descriptor, email: user.email || '', createdAt: Date.now(), method: 'face-api-descriptor' });
+          localStorage.setItem(localKey('faceRequired', user.email), 'false');
+          localStorage.setItem(localKey('failures', user.email), '0');
+          showDashboard(user); return;
+        }
         const stored = snap.val().descriptor;
         if (stored.length !== descriptor.length) throw new Error('Cadastro facial incompatível. Cadastre o rosto novamente.');
         const distance = Math.sqrt(descriptor.reduce((sum, v, i) => sum + Math.pow(v - stored[i], 2), 0));
@@ -221,6 +302,7 @@
         }
         localStorage.setItem(localKey('successes', user.email), '0');
         localStorage.setItem(localKey('failures', user.email), '0');
+        localStorage.setItem(localKey('faceRequired', user.email), 'false');
         showDashboard(user);
       } catch(e) { setFaceMessage(e.message || 'Não foi possível verificar o rosto. Tente novamente.'); }
       finally { button.disabled = false; }
@@ -314,7 +396,6 @@
         loginFlowActive = true;
         try {
             const credential = await signInWithEmailAndPassword(auth, email, pass);
-            localStorage.setItem(failureKey, '0');
             let accounts = JSON.parse(localStorage.getItem('saved_accounts') || '[]');
             if (!accounts.includes(email)) {
                 accounts.push(email);
@@ -334,7 +415,7 @@
                   ? ' Você já teve duas tentativas malsucedidas neste navegador; a verificação facial será solicitada após autenticar com a senha correta.'
                   : ' Uma segunda falha fará o sistema solicitar verificação facial após a próxima autenticação correta.';
             }
-            if (auth.currentUser && !document.getElementById('view-dashboard').classList.contains('hidden') === false) {
+            if (auth.currentUser && document.getElementById('view-dashboard').classList.contains('hidden')) {
                 try { await signOut(auth); } catch (_) {}
             }
             showLoginMessage((authFailure
@@ -388,6 +469,14 @@
     <video id="face-video" autoplay muted playsinline></video>
     <p class="face-note">Privacidade: este sistema salva no Firebase apenas um vetor matemático de características faciais, não a fotografia. Esse vetor ainda é um dado biométrico sensível. Use somente com consentimento e regras de acesso restritas no Firebase.</p>
     <button id="face-action" class="btn" onclick="window.confirmarRosto()">Verificar meu rosto</button>
+    <button type="button" class="btn btn-phone" onclick="window.mostrarOpcaoCodigo()">Usar código secreto</button>
+    <div id="secret-panel" class="secret-panel hidden">
+      <strong id="secret-code-title">Código secreto</strong>
+      <p id="secret-code-help" style="font-size:13px;line-height:1.4;margin:8px 0">Digite seu código secreto.</p>
+      <input id="secret-code-input" type="password" autocomplete="current-password" placeholder="Código secreto" />
+      <input id="secret-code-confirm" type="password" autocomplete="new-password" placeholder="Confirme o código (primeiro cadastro)" />
+      <button id="secret-code-submit" type="button" class="btn" onclick="window.confirmarCodigoSecreto()">Confirmar código</button>
+    </div>
     <button type="button" class="btn btn-phone" onclick="window.mostrarOpcaoTelefone()">📱 Usar o telefone para reconhecer o rosto</button>
     <div id="phone-panel" class="phone-panel hidden">
       <strong>Continue pelo celular</strong>
