@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Painel - SCFR</title>
     <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
         :root { --primary: #1a73e8; --text: #202124; --border: #dadce0; }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Roboto, sans-serif; }
@@ -55,6 +56,11 @@
         .face-note { font-size:13px; line-height:1.5; color:#5f6368; margin:10px 0 16px; }
         .system-message { margin:0 0 14px; padding:11px 12px; border-radius:8px; font-size:14px; background:#eef4ff; color:#174ea6; text-align:left; }
         .btn-secondary { background:#5f6368; margin-top:9px; }
+        .btn-phone { background:#0f766e; margin-top:9px; }
+        .phone-panel { margin-top:14px; padding:14px; border:1px solid #cbd5e1; border-radius:12px; background:#f8fafc; text-align:center; }
+        .phone-panel p { font-size:13px; line-height:1.45; margin:8px 0; }
+        #phone-qr { display:flex; justify-content:center; align-items:center; padding:12px; background:#fff; border-radius:8px; min-height:40px; overflow-wrap:anywhere; }
+        #phone-url { font-size:12px; word-break:break-all; color:#334155; }
     </style>
 </head>
 <body>
@@ -220,6 +226,36 @@
       finally { button.disabled = false; }
     };
 
+
+    let phoneQrInstance = null;
+    window.mostrarOpcaoTelefone = () => {
+      const panel = document.getElementById('phone-panel');
+      panel.classList.remove('hidden');
+      const targetUrl = window.location.href;
+      document.getElementById('phone-url').textContent = targetUrl;
+      const qr = document.getElementById('phone-qr');
+      qr.innerHTML = '';
+      if (window.QRCode) {
+        phoneQrInstance = new QRCode(qr, {
+          text: targetUrl,
+          width: 190,
+          height: 190,
+          correctLevel: QRCode.CorrectLevel.M
+        });
+      } else {
+        qr.textContent = 'O gerador de QR Code não carregou. Use o link exibido abaixo.';
+      }
+    };
+    window.copiarLinkTelefone = async () => {
+      const url = window.location.href;
+      try {
+        await navigator.clipboard.writeText(url);
+        document.getElementById('phone-url').textContent = 'Link copiado: ' + url;
+      } catch (_) {
+        document.getElementById('phone-url').textContent = 'Copie este link manualmente: ' + url;
+      }
+    };
+
     const nomesUsuarios = {
         "eventosdehenrique@gmail.com": "Henrique Rocha",
         "helena.crocha@cfrmail.com": "Helena da Costa Rocha"
@@ -352,6 +388,15 @@
     <video id="face-video" autoplay muted playsinline></video>
     <p class="face-note">Privacidade: este sistema salva no Firebase apenas um vetor matemático de características faciais, não a fotografia. Esse vetor ainda é um dado biométrico sensível. Use somente com consentimento e regras de acesso restritas no Firebase.</p>
     <button id="face-action" class="btn" onclick="window.confirmarRosto()">Verificar meu rosto</button>
+    <button type="button" class="btn btn-phone" onclick="window.mostrarOpcaoTelefone()">📱 Usar o telefone para reconhecer o rosto</button>
+    <div id="phone-panel" class="phone-panel hidden">
+      <strong>Continue pelo celular</strong>
+      <p>Abra a câmera do celular e leia este QR Code. O sistema será aberto no telefone; entre com a mesma conta e faça o reconhecimento usando a câmera do aparelho.</p>
+      <div id="phone-qr"></div>
+      <p id="phone-url"></p>
+      <button type="button" class="btn btn-secondary" onclick="window.copiarLinkTelefone()">Copiar link para abrir no celular</button>
+      <p>Se a página estiver incorporada no Google Sites e a câmera não abrir, hospede/abra o HTML diretamente por HTTPS e gere o QR novamente nessa página.</p>
+    </div>
     <button class="btn btn-secondary" onclick="window.cancelarRosto()">Cancelar e sair</button>
   </div>
 </div>
