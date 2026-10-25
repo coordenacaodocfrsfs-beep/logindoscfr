@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Painel - SCFR</title>
+    <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
     <style>
         :root { --primary: #1a73e8; --text: #202124; --border: #dadce0; }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Roboto, sans-serif; }
@@ -48,6 +49,12 @@
         .user-email { color: #5f6368; font-size: 14px; margin-top: 4px; display: block; }
         
         .hidden { display: none !important; }
+        .face-modal { position:fixed; inset:0; background:rgba(15,23,42,.68); z-index:9999; display:flex; align-items:center; justify-content:center; padding:18px; }
+        .face-panel { background:#fff; width:min(520px,100%); border-radius:18px; padding:24px; box-shadow:0 20px 70px #0004; text-align:center; }
+        .face-panel video { width:100%; max-height:300px; object-fit:cover; background:#111827; border-radius:12px; margin:14px 0; transform:scaleX(-1); }
+        .face-note { font-size:13px; line-height:1.5; color:#5f6368; margin:10px 0 16px; }
+        .system-message { margin:0 0 14px; padding:11px 12px; border-radius:8px; font-size:14px; background:#eef4ff; color:#174ea6; text-align:left; }
+        .btn-secondary { background:#5f6368; margin-top:9px; }
     </style>
 </head>
 <body>
@@ -66,6 +73,7 @@
     <div id="view-login" class="card hidden" style="text-align: left;">
         <h2>Fazer login</h2>
         <p>Digite sua senha para continuar</p>
+        <div id="login-message" class="system-message hidden" role="status"></div>
         <input type="email" id="email" class="input-box" placeholder="E-mail">
         <input type="password" id="password" class="input-box" placeholder="Senha">
         <button class="btn" style="text-align: center;" onclick="handleLogin()">Entrar</button>
@@ -88,6 +96,7 @@
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
     import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+    import { getDatabase, ref, get, set, update } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
     const firebaseConfig = {
         apiKey: "AIzaSyDO6SL7Sm6yXEV3IckIDgfNg6jNQigCb4Q",
@@ -102,6 +111,114 @@
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
+    const db = getDatabase(app);
+    let pendingUser = null;
+    let cameraStream = null;
+    let faceModelsReady = false;
+    let faceMode = 'verify';
+    let faceEmail = '';
+    const localKey = (kind, email) => `scfr_${kind}_${(email || '').trim().toLowerCase()}`;
+    const setFaceMessage = (msg) => { document.getElementById('face-message').textContent = msg; };
+    async function loadFaceModels() {
+      if (faceModelsReady) return;
+      // A biblioteca é carregada por script externo; aguarda um pouco para evitar
+      // a corrida entre o script clássico e este módulo ES.
+      for (let i = 0; i < 40 && !window.faceapi; i++) {
+        await new Promise(resolve => setTimeout(resolve, 150));
+      }
+      if (!window.faceapi) throw new Error('A biblioteca facial não carregou. Confira a internet, bloqueadores de conteúdo e se o site permite carregar scripts externos.');
+      const base = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights';
+      await Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri(base),
+        faceapi.nets.faceLandmark68Net.loadFromUri(base),
+        faceapi.nets.faceRecognitionNet.loadFromUri(base)
+      ]);
+      faceModelsReady = true;
+    }
+    async function startFaceFlow(user, mode) {
+      pendingUser = user; faceMode = mode; faceEmail = (user.email || '').toLowerCase();
+      document.getElementById('face-title').textContent = mode === 'register' ? 'Cadastrar rosto' : 'Verificação facial';
+      document.getElementById('face-description').textContent = mode === 'register' ? 'Cadastre seu rosto para proteger sua conta. Olhe para a câmera.' : 'Confirme sua identidade para continuar.';
+      document.getElementById('face-action').textContent = mode === 'register' ? 'Cadastrar e continuar' : 'Verificar meu rosto';
+      document.getElementById('face-modal').classList.remove('hidden');
+      document.getElementById('view-accounts').classList.add('hidden');
+      document.getElementById('view-login').classList.add('hidden');
+      document.getElementById('view-dashboard').classList.add('hidden');
+      setFaceMessage('Carregando verificação facial…');
+      try {
+        await loadFaceModels();
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error('Este navegador não disponibiliza câmera. Abra a página em HTTPS e fora de uma visualização incorporada que bloqueie a câmera.');
+        }
+        cameraStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}, audio:false});
+        const video = document.getElementById('face-video'); video.srcObject = cameraStream;
+        await video.play();
+        setFaceMessage('Câmera pronta. Deixe o rosto bem iluminado e centralizado.');
+      } catch (e) {
+        console.error('Falha ao iniciar verificação facial:', e);
+        setFaceMessage('Não foi possível iniciar a verificação: ' + e.message + ' Verifique a conexão, autorize a câmera e abra a página por HTTPS. Se estiver no Google Sites, teste também a página HTML publicada diretamente.');
+      }
+    }
+    function stopFaceCamera() {
+      if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null; }
+      const video = document.getElementById('face-video'); video.srcObject = null;
+    }
+    async function getFaceDescriptor() {
+      const video = document.getElementById('face-video');
+      if (!window.faceapi || !video.srcObject || video.readyState < 2) throw new Error('A câmera ainda não está pronta.');
+      const result = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({inputSize:320, scoreThreshold:0.5})).withFaceLandmarks().withFaceDescriptor();
+      if (!result) throw new Error('Não detectei um rosto. Olhe para a câmera e tente novamente.');
+      return Array.from(result.descriptor);
+    }
+    async function completeLogin(user) {
+      const key = localKey('successes', user.email);
+      let count = Number(localStorage.getItem(key) || 0) + 1;
+      localStorage.setItem(key, String(count));
+      const failures = Number(localStorage.getItem(localKey('failures', user.email)) || 0);
+      let profile;
+      try { const snap = await get(ref(db, `faceProfiles/${user.uid}`)); profile = snap.exists() ? snap.val() : null; }
+      catch(e) { await signOut(auth); throw new Error('Não foi possível consultar o cadastro facial no Firebase. Verifique as regras de acesso.'); }
+      const mustVerify = count % 5 === 0 || failures >= 2;
+      if (!profile || !Array.isArray(profile.descriptor)) { await startFaceFlow(user, 'register'); return; }
+      if (mustVerify) { await startFaceFlow(user, 'verify'); return; }
+      showDashboard(user);
+    }
+    function showDashboard(user) {
+      stopFaceCamera(); document.getElementById('face-modal').classList.add('hidden');
+      const email = (user.email || '').trim().toLowerCase();
+      document.getElementById('display-name').innerText = nomesUsuarios[email] || 'Usuário';
+      document.getElementById('display-email').innerText = `(${user.email})`;
+      showStep('view-dashboard');
+    }
+    window.cancelarRosto = async () => { stopFaceCamera(); document.getElementById('face-modal').classList.add('hidden'); if (auth.currentUser) await signOut(auth); pendingUser = null; showStep('view-login'); };
+    window.confirmarRosto = async () => {
+      const button = document.getElementById('face-action'); button.disabled = true;
+      try {
+        setFaceMessage('Analisando… mantenha o rosto diante da câmera.');
+        const descriptor = await getFaceDescriptor();
+        const user = pendingUser || auth.currentUser;
+        if (!user) throw new Error('Sessão não encontrada. Entre novamente.');
+        const profileRef = ref(db, `faceProfiles/${user.uid}`);
+        if (faceMode === 'register') {
+          await set(profileRef, { descriptor, email: user.email || '', createdAt: Date.now(), method: 'face-api-descriptor' });
+          localStorage.setItem(localKey('successes', user.email), '0');
+          showDashboard(user); return;
+        }
+        const snap = await get(profileRef);
+        if (!snap.exists() || !Array.isArray(snap.val().descriptor)) throw new Error('Cadastro facial não encontrado. Entre em contato com a coordenação.');
+        const stored = snap.val().descriptor;
+        if (stored.length !== descriptor.length) throw new Error('Cadastro facial incompatível. Cadastre o rosto novamente.');
+        const distance = Math.sqrt(descriptor.reduce((sum, v, i) => sum + Math.pow(v - stored[i], 2), 0));
+        if (distance > 0.48) {
+          await signOut(auth);
+          throw new Error('O rosto não corresponde ao cadastro. Acesso bloqueado.');
+        }
+        localStorage.setItem(localKey('successes', user.email), '0');
+        localStorage.setItem(localKey('failures', user.email), '0');
+        showDashboard(user);
+      } catch(e) { setFaceMessage(e.message || 'Não foi possível verificar o rosto. Tente novamente.'); }
+      finally { button.disabled = false; }
+    };
 
     const nomesUsuarios = {
         "eventosdehenrique@gmail.com": "Henrique Rocha",
@@ -139,58 +256,104 @@
         }
     }
 
+    function showLoginMessage(message, isError = true) {
+        const box = document.getElementById('login-message');
+        box.textContent = message;
+        box.classList.remove('hidden');
+        box.style.background = isError ? '#fce8e6' : '#e6f4ea';
+        box.style.color = isError ? '#b3261e' : '#137333';
+    }
+
     window.handleLogin = async () => {
-        const email = document.getElementById('email').value.trim();
-        const pass = document.getElementById('password').value.trim();
-        
+        const email = document.getElementById('email').value.trim().toLowerCase();
+        const pass = document.getElementById('password').value;
+        const loginButton = document.querySelector('#view-login .btn');
+        const failureKey = localKey('failures', email);
+
         if (!email || !pass) {
-            alert("Preencha o e-mail e a senha.");
+            showLoginMessage('Preencha o e-mail e a senha.');
             return;
         }
-
+        if (loginButton) { loginButton.disabled = true; loginButton.textContent = 'Entrando…'; }
+        loginFlowActive = true;
         try {
-            await signInWithEmailAndPassword(auth, email, pass);
+            const credential = await signInWithEmailAndPassword(auth, email, pass);
+            localStorage.setItem(failureKey, '0');
             let accounts = JSON.parse(localStorage.getItem('saved_accounts') || '[]');
-            if(!accounts.includes(email)) {
+            if (!accounts.includes(email)) {
                 accounts.push(email);
                 localStorage.setItem('saved_accounts', JSON.stringify(accounts));
             }
-        } catch(e) { 
-            alert("Erro ao entrar: " + e.message); 
+            document.getElementById('login-message').classList.add('hidden');
+            await completeLogin(credential.user);
+        } catch (e) {
+            // Só uma falha de autenticação conta como senha/login malsucedido.
+            const authFailure = ['auth/invalid-credential', 'auth/wrong-password', 'auth/user-not-found',
+              'auth/invalid-email', 'auth/user-disabled', 'auth/too-many-requests'].includes(e.code);
+            let extra = '';
+            if (authFailure) {
+                const failures = Number(localStorage.getItem(failureKey) || 0) + 1;
+                localStorage.setItem(failureKey, String(failures));
+                extra = failures >= 2
+                  ? ' Você já teve duas tentativas malsucedidas neste navegador; a verificação facial será solicitada após autenticar com a senha correta.'
+                  : ' Uma segunda falha fará o sistema solicitar verificação facial após a próxima autenticação correta.';
+            }
+            if (auth.currentUser && !document.getElementById('view-dashboard').classList.contains('hidden') === false) {
+                try { await signOut(auth); } catch (_) {}
+            }
+            showLoginMessage((authFailure
+              ? 'Não foi possível entrar. Confira seu e-mail e senha.'
+              : (e.message || 'Não foi possível concluir o login.')) + extra);
+            if (!authFailure) console.error('Erro no fluxo de login/verificação facial:', e);
+        } finally {
+            loginFlowActive = false;
+            if (loginButton) { loginButton.disabled = false; loginButton.textContent = 'Entrar'; }
         }
-    }
+    };
 
     window.handleLogout = async () => {
         await signOut(auth);
         location.reload();
     }
 
+    let loginFlowActive = false;
     onAuthStateChanged(auth, (user) => {
+        if (loginFlowActive) return;
         if (user) {
-            const emailLogado = user.email ? user.email.trim().toLowerCase() : "";
-            const nomeFormatado = nomesUsuarios[emailLogado] || "Usuário";
-            
-            document.getElementById('display-name').innerText = nomeFormatado;
-            document.getElementById('display-email').innerText = `(${user.email})`;
-            
-            showStep('view-dashboard');
-        } else {
+            // O painel só é exibido por completeLogin/showDashboard após a checagem necessária.
+            if (!document.getElementById('face-modal').classList.contains('hidden')) return;
+            if (document.getElementById('view-dashboard').classList.contains('hidden')) {
+              document.getElementById('view-login').classList.remove('hidden');
+              document.getElementById('view-accounts').classList.add('hidden');
+            }
+        } else if (document.getElementById('face-modal').classList.contains('hidden')) {
             const accounts = JSON.parse(localStorage.getItem('saved_accounts') || '[]');
             if (accounts.length > 0) {
-                const list = document.getElementById('list-container');
-                list.innerHTML = '';
+                const list = document.getElementById('list-container'); list.innerHTML = '';
                 accounts.forEach(acc => {
                     const nomeAcc = nomesUsuarios[acc.toLowerCase()] || acc;
-                    list.innerHTML += `<div class="account-item" onclick="document.getElementById('email').value='${acc}'; showStep('view-login')">
-                        <div class="icon">${acc[0].toUpperCase()}</div><div><strong>${nomeAcc}</strong><br><small style="color:#5f6368">${acc}</small></div>
-                    </div>`;
+                    const item = document.createElement('div'); item.className = 'account-item';
+                    item.innerHTML = `<div class="icon">${acc[0].toUpperCase()}</div><div><strong>${nomeAcc}</strong><br><small style="color:#5f6368"></small></div>`;
+                    item.querySelector('small').textContent = acc;
+                    item.onclick = () => { document.getElementById('email').value = acc; showStep('view-login'); };
+                    list.appendChild(item);
                 });
                 showStep('view-accounts');
-            } else {
-                showStep('view-login');
-            }
+            } else showStep('view-login');
         }
     });
 </script>
+
+<div id="face-modal" class="face-modal hidden" role="dialog" aria-modal="true" aria-labelledby="face-title">
+  <div class="face-panel">
+    <h2 id="face-title">Verificação facial</h2>
+    <p id="face-description">Posicione seu rosto no centro da câmera.</p>
+    <div id="face-message" class="system-message">A câmera será usada para verificar sua identidade.</div>
+    <video id="face-video" autoplay muted playsinline></video>
+    <p class="face-note">Privacidade: este sistema salva no Firebase apenas um vetor matemático de características faciais, não a fotografia. Esse vetor ainda é um dado biométrico sensível. Use somente com consentimento e regras de acesso restritas no Firebase.</p>
+    <button id="face-action" class="btn" onclick="window.confirmarRosto()">Verificar meu rosto</button>
+    <button class="btn btn-secondary" onclick="window.cancelarRosto()">Cancelar e sair</button>
+  </div>
+</div>
 </body>
 </html>
