@@ -3,9 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Painel - SCFR</title>
-    <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
-    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <title>Painel - SCFR | Chave USB</title>
     <style>
         :root { --primary: #1a73e8; --text: #202124; --border: #dadce0; }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Roboto, sans-serif; }
@@ -57,10 +55,11 @@
         .system-message { margin:0 0 14px; padding:11px 12px; border-radius:8px; font-size:14px; background:#eef4ff; color:#174ea6; text-align:left; }
         .btn-secondary { background:#5f6368; margin-top:9px; }
         .btn-phone { background:#0f766e; margin-top:9px; }
-        .secret-panel { margin-top:14px; padding:14px; border:1px solid #cbd5e1; border-radius:12px; background:#f8fafc; text-align:left; }
-        .secret-panel input { width:100%; padding:12px; margin:8px 0; border:1px solid #cbd5e1; border-radius:8px; font-size:16px; }
         .phone-panel { margin-top:14px; padding:14px; border:1px solid #cbd5e1; border-radius:12px; background:#f8fafc; text-align:center; }
         .phone-panel p { font-size:13px; line-height:1.45; margin:8px 0; }
+    .pair-code { font-size:28px; letter-spacing:7px; font-weight:800; color:#0f766e; margin:12px 0; }
+    .phone-camera-page { width:min(520px, calc(100% - 28px)); background:#fff; padding:24px; border-radius:18px; box-shadow:0 12px 40px #0002; text-align:center; }
+    .phone-camera-page video { width:100%; max-height:60vh; object-fit:cover; border-radius:12px; background:#111; margin:14px 0; transform:scaleX(-1); }
         #phone-qr { display:flex; justify-content:center; align-items:center; padding:12px; background:#fff; border-radius:8px; min-height:40px; overflow-wrap:anywhere; }
         #phone-url { font-size:12px; word-break:break-all; color:#334155; }
     </style>
@@ -101,10 +100,19 @@
         <button class="btn btn-danger" onclick="handleLogout()">Sair da Conta</button>
     </div>
 
+    <div id="phone-camera-page" class="phone-camera-page hidden">
+        <h2>Conectar câmera ao SCFR</h2>
+        <p id="phone-camera-status">Validando conexão segura…</p>
+        <video id="phone-camera-video" autoplay muted playsinline></video>
+        <button id="phone-camera-start" class="btn" type="button" onclick="window.iniciarEnvioCamera()">Iniciar câmera</button>
+        <button class="btn btn-danger" type="button" onclick="window.encerrarEnvioCamera()">Encerrar conexão</button>
+        <p class="face-note">Mantenha esta página aberta e o celular conectado à internet durante a verificação.</p>
+    </div>
+
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
     import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-    import { getDatabase, ref, get, set, update } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+    import { getDatabase, ref, get, set, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
     const firebaseConfig = {
         apiKey: "AIzaSyDO6SL7Sm6yXEV3IckIDgfNg6jNQigCb4Q",
@@ -121,258 +129,13 @@
     const auth = getAuth(app);
     const db = getDatabase(app);
     let pendingUser = null;
-    let cameraStream = null;
-    let faceModelsReady = false;
-    let faceMode = 'verify';
-    let faceEmail = '';
-    const localKey = (kind, email) => `scfr_${kind}_${(email || '').trim().toLowerCase()}`;
-    const setFaceMessage = (msg) => { document.getElementById('face-message').textContent = msg; };
-    async function loadFaceModels() {
-      if (faceModelsReady) return;
-      // A biblioteca é carregada por script externo; aguarda um pouco para evitar
-      // a corrida entre o script clássico e este módulo ES.
-      for (let i = 0; i < 40 && !window.faceapi; i++) {
-        await new Promise(resolve => setTimeout(resolve, 150));
-      }
-      if (!window.faceapi) throw new Error('A biblioteca facial não carregou. Confira a internet, bloqueadores de conteúdo e se o site permite carregar scripts externos.');
-      const base = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights';
-      await Promise.all([
-        faceapi.nets.tinyFaceDetector.loadFromUri(base),
-        faceapi.nets.faceLandmark68Net.loadFromUri(base),
-        faceapi.nets.faceRecognitionNet.loadFromUri(base)
-      ]);
-      faceModelsReady = true;
-    }
-    async function startFaceFlow(user, mode) {
-      pendingUser = user; faceMode = mode; faceEmail = (user.email || '').toLowerCase();
-      document.getElementById('face-title').textContent = mode === 'register' ? 'Cadastrar rosto' : 'Verificação facial';
-      document.getElementById('face-description').textContent = mode === 'register' ? 'Cadastre seu rosto para proteger sua conta. Olhe para a câmera.' : 'Confirme sua identidade para continuar.';
-      document.getElementById('face-action').textContent = mode === 'register' ? 'Cadastrar e continuar' : 'Verificar meu rosto';
-      document.getElementById('face-modal').classList.remove('hidden');
-      document.getElementById('view-accounts').classList.add('hidden');
-      document.getElementById('view-login').classList.add('hidden');
-      document.getElementById('view-dashboard').classList.add('hidden');
-      setFaceMessage('Carregando verificação facial…');
-      try {
-        await loadFaceModels();
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          throw new Error('Este navegador não disponibiliza câmera. Abra a página em HTTPS e fora de uma visualização incorporada que bloqueie a câmera.');
-        }
-        cameraStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}, audio:false});
-        const video = document.getElementById('face-video'); video.srcObject = cameraStream;
-        await video.play();
-        setFaceMessage('Câmera pronta. Deixe o rosto bem iluminado e centralizado.');
-      } catch (e) {
-        console.error('Falha ao iniciar verificação facial:', e);
-        setFaceMessage('Não foi possível iniciar a verificação: ' + e.message + ' Verifique a conexão, autorize a câmera e abra a página por HTTPS. Se estiver no Google Sites, teste também a página HTML publicada diretamente.');
-      }
-    }
-    function stopFaceCamera() {
-      if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null; }
-      const video = document.getElementById('face-video'); video.srcObject = null;
-    }
-    async function getFaceDescriptor() {
-      const video = document.getElementById('face-video');
-      if (!window.faceapi || !video.srcObject || video.readyState < 2) throw new Error('A câmera ainda não está pronta.');
-      const result = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({inputSize:320, scoreThreshold:0.5})).withFaceLandmarks().withFaceDescriptor();
-      if (!result) throw new Error('Não detectei um rosto. Olhe para a câmera e tente novamente.');
-      return Array.from(result.descriptor);
-    }
-    async function completeLogin(user) {
-      // Cada login exige uma verificação: rosto ou código secreto.
-      const email = (user.email || '').toLowerCase();
-      pendingUser = user;
-      faceEmail = email;
-      faceMode = 'verify';
-      document.getElementById('face-title').textContent = 'Confirme sua identidade';
-      document.getElementById('face-description').textContent = 'Para entrar no SCFR, conclua uma das opções abaixo.';
-      document.getElementById('face-modal').classList.remove('hidden');
-      document.getElementById('view-accounts').classList.add('hidden');
-      document.getElementById('view-login').classList.add('hidden');
-      document.getElementById('view-dashboard').classList.add('hidden');
-      document.getElementById('secret-panel').classList.add('hidden');
-      document.getElementById('phone-panel').classList.add('hidden');
-      setFaceMessage('Escolha reconhecimento facial ou código secreto. Uma opção é obrigatória.');
-      // Tenta abrir a câmera automaticamente; se falhar, o código secreto continua disponível.
-      try {
-        await loadFaceModels();
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('Este navegador não disponibiliza câmera.');
-        cameraStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}, audio:false});
-        const video = document.getElementById('face-video'); video.srcObject = cameraStream;
-        await video.play();
-        setFaceMessage('Escolha uma opção. Para reconhecimento facial, deixe o rosto iluminado e centralizado.');
-      } catch (e) {
-        console.warn('Câmera indisponível; código secreto pode ser usado:', e);
-        setFaceMessage('A câmera não está disponível neste dispositivo. Use o código secreto ou abra esta página no telefone.');
-      }
-    }
-    async function hashSecret(value) {
-      const bytes = new TextEncoder().encode(value);
-      const digest = await crypto.subtle.digest('SHA-256', bytes);
-      return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2,'0')).join('');
-    }
-    window.mostrarOpcaoCodigo = async () => {
-      document.getElementById('secret-panel').classList.remove('hidden');
-      document.getElementById('phone-panel').classList.add('hidden');
-      const user = pendingUser || auth.currentUser;
-      if (!user) { setFaceMessage('Sessão expirada. Entre novamente.'); return; }
-      try {
-        const snap = await get(ref(db, `secretCodes/${user.uid}`));
-        const exists = snap.exists() && typeof snap.val().hash === 'string';
-        document.getElementById('secret-code-title').textContent = exists ? 'Digite seu código secreto' : 'Crie seu código secreto';
-        document.getElementById('secret-code-help').textContent = exists ? 'Digite o código que você cadastrou anteriormente.' : 'Primeiro acesso: crie um código com pelo menos 8 caracteres. Guarde-o em local seguro.';
-        document.getElementById('secret-code-confirm').classList.toggle('hidden', exists);
-        document.getElementById('secret-code-input').value = '';
-        document.getElementById('secret-code-confirm').value = '';
-      } catch (e) {
-        setFaceMessage('Não foi possível consultar o código secreto no Firebase. Confira as regras do banco de dados.');
-      }
-    };
-    window.confirmarCodigoSecreto = async () => {
-      const btn = document.getElementById('secret-code-submit');
-      btn.disabled = true;
-      try {
-        const user = pendingUser || auth.currentUser;
-        if (!user) throw new Error('Sessão expirada. Entre novamente.');
-        const code = document.getElementById('secret-code-input').value;
-        const confirm = document.getElementById('secret-code-confirm').value;
-        if (code.length < 8) throw new Error('Use um código secreto com pelo menos 8 caracteres.');
-        const codeRef = ref(db, `secretCodes/${user.uid}`);
-        const snap = await get(codeRef);
-        if (!snap.exists() || typeof snap.val().hash !== 'string') {
-          if (code !== confirm) throw new Error('Os códigos não coincidem. Digite e confirme o mesmo código.');
-          await set(codeRef, { hash: await hashSecret(code), updatedAt: Date.now() });
-          setFaceMessage('Código secreto cadastrado. Acesso autorizado.');
-        } else {
-          if (await hashSecret(code) !== snap.val().hash) throw new Error('Código secreto incorreto. Tente novamente.');
-          setFaceMessage('Código confirmado. Acesso autorizado.');
-        }
-        localStorage.setItem(localKey('faceRequired', user.email), 'false');
-        localStorage.setItem(localKey('failures', user.email), '0');
-        showDashboard(user);
-      } catch(e) { setFaceMessage(e.message || 'Não foi possível validar o código secreto.'); }
-      finally { btn.disabled = false; }
-    };
-    function showDashboard(user) {
-      stopFaceCamera(); document.getElementById('face-modal').classList.add('hidden');
-      const email = (user.email || '').trim().toLowerCase();
-      document.getElementById('display-name').innerText = nomesUsuarios[email] || 'Usuário';
-      document.getElementById('display-email').innerText = `(${user.email})`;
-      showStep('view-dashboard');
-    }
-    window.cancelarRosto = async () => {
-      const email = faceEmail || (pendingUser && pendingUser.email) || (auth.currentUser && auth.currentUser.email) || '';
-      if (email) localStorage.setItem(localKey('faceRequired', email), 'true');
-      stopFaceCamera();
-      document.getElementById('face-modal').classList.add('hidden');
-      document.getElementById('view-dashboard').classList.add('hidden');
-      pendingUser = null;
-      try { if (auth.currentUser) await signOut(auth); } catch (e) { console.error('Falha ao encerrar sessão:', e); }
-      showStep('view-login');
-      showLoginMessage('A verificação facial é obrigatória para continuar. Entre novamente e conclua a verificação; cancelar não libera o acesso.');
-    };
-    window.confirmarRosto = async () => {
-      const button = document.getElementById('face-action'); button.disabled = true;
-      try {
-        setFaceMessage('Analisando… mantenha o rosto diante da câmera.');
-        const descriptor = await getFaceDescriptor();
-        const user = pendingUser || auth.currentUser;
-        if (!user) throw new Error('Sessão não encontrada. Entre novamente.');
-        const profileRef = ref(db, `faceProfiles/${user.uid}`);
-        if (faceMode === 'register') {
-          await set(profileRef, { descriptor, email: user.email || '', createdAt: Date.now(), method: 'face-api-descriptor' });
-          localStorage.setItem(localKey('successes', user.email), '0');
-          localStorage.setItem(localKey('faceRequired', user.email), 'false');
-          localStorage.setItem(localKey('failures', user.email), '0');
-          showDashboard(user); return;
-        }
-        const snap = await get(profileRef);
-        if (!snap.exists() || !Array.isArray(snap.val().descriptor)) {
-          await set(profileRef, { descriptor, email: user.email || '', createdAt: Date.now(), method: 'face-api-descriptor' });
-          localStorage.setItem(localKey('faceRequired', user.email), 'false');
-          localStorage.setItem(localKey('failures', user.email), '0');
-          showDashboard(user); return;
-        }
-        const stored = snap.val().descriptor;
-        if (stored.length !== descriptor.length) throw new Error('Cadastro facial incompatível. Cadastre o rosto novamente.');
-        const distance = Math.sqrt(descriptor.reduce((sum, v, i) => sum + Math.pow(v - stored[i], 2), 0));
-        if (distance > 0.48) {
-          await signOut(auth);
-          throw new Error('O rosto não corresponde ao cadastro. Acesso bloqueado.');
-        }
-        localStorage.setItem(localKey('successes', user.email), '0');
-        localStorage.setItem(localKey('failures', user.email), '0');
-        localStorage.setItem(localKey('faceRequired', user.email), 'false');
-        showDashboard(user);
-      } catch(e) { setFaceMessage(e.message || 'Não foi possível verificar o rosto. Tente novamente.'); }
-      finally { button.disabled = false; }
-    };
-
-
-    let phoneQrInstance = null;
-    window.mostrarOpcaoTelefone = () => {
-      const panel = document.getElementById('phone-panel');
-      panel.classList.remove('hidden');
-      const targetUrl = window.location.href;
-      document.getElementById('phone-url').textContent = targetUrl;
-      const qr = document.getElementById('phone-qr');
-      qr.innerHTML = '';
-      if (window.QRCode) {
-        phoneQrInstance = new QRCode(qr, {
-          text: targetUrl,
-          width: 190,
-          height: 190,
-          correctLevel: QRCode.CorrectLevel.M
-        });
-      } else {
-        qr.textContent = 'O gerador de QR Code não carregou. Use o link exibido abaixo.';
-      }
-    };
-    window.copiarLinkTelefone = async () => {
-      const url = window.location.href;
-      try {
-        await navigator.clipboard.writeText(url);
-        document.getElementById('phone-url').textContent = 'Link copiado: ' + url;
-      } catch (_) {
-        document.getElementById('phone-url').textContent = 'Copie este link manualmente: ' + url;
-      }
-    };
-
+    let loginFlowActive = false;
     const nomesUsuarios = {
         "eventosdehenrique@gmail.com": "Henrique Rocha",
         "helena.crocha@cfrmail.com": "Helena da Costa Rocha"
     };
-
-    const urlParams = new URLSearchParams(window.location.search);
-    if (urlParams.get('logout') === 'true') {
-        signOut(auth).then(() => {
-            window.location.href = window.location.pathname;
-        });
-    }
-
-    window.showStep = (step) => {
-        document.getElementById('view-accounts').classList.add('hidden');
-        document.getElementById('view-login').classList.add('hidden');
-        document.getElementById('view-dashboard').classList.add('hidden');
-        
-        const target = document.getElementById(step);
-        target.classList.remove('hidden');
-    }
-
-    // Redirecionamento com log no console para conferência
-    window.irParaSistema = () => {
-        const user = auth.currentUser;
-        if (user) {
-            const emailAtual = user.email ? user.email.trim().toLowerCase() : "";
-            console.log("E-mail logado atualmente:", emailAtual);
-            
-            if (emailAtual === "helena.crocha@cfrmail.com") {
-                window.location.href = "https://sites.google.com/view/scfrhelena-/in%C3%ADcio";
-            } else {
-                window.location.href = "https://sites.google.com/view/scfr-inicio?usp=sharing";
-            }
-        }
-    }
+    const localKey = (kind, email) => `scfr_${kind}_${(email || '').trim().toLowerCase()}`;
+    const keyRef = uid => ref(db, `usbAccessKeys/${uid}`);
 
     function showLoginMessage(message, isError = true) {
         const box = document.getElementById('login-message');
@@ -381,69 +144,147 @@
         box.style.background = isError ? '#fce8e6' : '#e6f4ea';
         box.style.color = isError ? '#b3261e' : '#137333';
     }
+    function setKeyMessage(message, isError = false) {
+        const box = document.getElementById('usb-message');
+        box.textContent = message;
+        box.style.background = isError ? '#fce8e6' : '#eef4ff';
+        box.style.color = isError ? '#b3261e' : '#174ea6';
+    }
+    async function sha256(value) {
+        const bytes = new TextEncoder().encode(value);
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    function openKeyGate(user, isFirstSetup) {
+        pendingUser = user;
+        document.getElementById('usb-modal').classList.remove('hidden');
+        document.getElementById('view-accounts').classList.add('hidden');
+        document.getElementById('view-login').classList.add('hidden');
+        document.getElementById('view-dashboard').classList.add('hidden');
+        document.getElementById('usb-setup').classList.toggle('hidden', !isFirstSetup);
+        document.getElementById('usb-verify').classList.toggle('hidden', isFirstSetup);
+        document.getElementById('usb-file').value = '';
+        setKeyMessage(isFirstSetup
+          ? 'Primeiro acesso: crie sua chave e salve o arquivo diretamente no pendrive. Depois selecione o arquivo no pendrive para confirmar.'
+          : 'Conecte o pendrive e selecione o arquivo de chave SCFR para continuar.');
+    }
+    async function continueAfterLogin(user) {
+        const snap = await get(keyRef(user.uid));
+        openKeyGate(user, !snap.exists() || !snap.val()?.hash);
+    }
+    function showDashboard(user) {
+        document.getElementById('usb-modal').classList.add('hidden');
+        const email = (user.email || '').trim().toLowerCase();
+        document.getElementById('display-name').innerText = nomesUsuarios[email] || 'Usuário';
+        document.getElementById('display-email').innerText = `(${user.email})`;
+        showStep('view-dashboard');
+    }
 
+    window.criarChaveUSB = async () => {
+        const btn = document.getElementById('usb-create-button');
+        btn.disabled = true;
+        try {
+            const user = pendingUser || auth.currentUser;
+            if (!user) throw new Error('Sessão expirada. Entre novamente.');
+            const existing = await get(keyRef(user.uid));
+            if (existing.exists() && existing.val()?.hash) throw new Error('Já existe uma chave cadastrada para esta conta. Use a chave existente ou solicite a redefinição ao administrador.');
+            const bytes = new Uint8Array(32);
+            crypto.getRandomValues(bytes);
+            const token = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+            const fileContent = `SCFR-USB-KEY-V1\n${token}\n`;
+            await set(keyRef(user.uid), { hash: await sha256(token), createdAt: Date.now(), version: 1 });
+            const blob = new Blob([fileContent], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'SCFR_CHAVE_DE_ACESSO.scfrkey';
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1500);
+            document.getElementById('usb-setup').classList.add('hidden');
+            document.getElementById('usb-verify').classList.remove('hidden');
+            document.getElementById('usb-file').value = '';
+            setKeyMessage('Chave criada e baixada! Mova o arquivo SCFR_CHAVE_DE_ACESSO.scfrkey para o pendrive. Depois selecione-o abaixo.');
+        } catch (e) {
+            setKeyMessage(e.message || 'Não foi possível criar a chave USB.', true);
+        } finally { btn.disabled = false; }
+    };
+
+    window.validarChaveUSB = async () => {
+        const btn = document.getElementById('usb-validate-button');
+        const fileInput = document.getElementById('usb-file');
+        btn.disabled = true;
+        try {
+            const user = pendingUser || auth.currentUser;
+            if (!user) throw new Error('Sessão expirada. Entre novamente.');
+            const file = fileInput.files && fileInput.files[0];
+            if (!file) throw new Error('Selecione o arquivo de chave que está no pendrive.');
+            const content = await file.text();
+            const lines = content.trim().split(/\r?\n/);
+            if (lines[0] !== 'SCFR-USB-KEY-V1' || !lines[1]) throw new Error('Este arquivo não é uma chave SCFR válida.');
+            const snap = await get(keyRef(user.uid));
+            if (!snap.exists() || !snap.val()?.hash) throw new Error('Não há chave cadastrada para esta conta.');
+            const hash = await sha256(lines[1].trim());
+            if (hash !== snap.val().hash) throw new Error('Chave incorreta. Conecte o pendrive cadastrado.');
+            localStorage.setItem(localKey('usbVerified', user.email), String(Date.now()));
+            showDashboard(user);
+        } catch (e) {
+            setKeyMessage(e.message || 'Não foi possível validar a chave USB.', true);
+        } finally { btn.disabled = false; }
+    };
+
+    window.cancelarChaveUSB = async () => {
+        document.getElementById('usb-modal').classList.add('hidden');
+        pendingUser = null;
+        try { if (auth.currentUser) await signOut(auth); } catch (e) { console.error(e); }
+        showStep('view-login');
+        showLoginMessage('A chave USB é obrigatória para continuar. O acesso foi bloqueado porque a verificação foi cancelada.');
+    };
+
+    window.showStep = (step) => {
+        ['view-accounts', 'view-login', 'view-dashboard'].forEach(id => document.getElementById(id).classList.add('hidden'));
+        document.getElementById(step).classList.remove('hidden');
+    };
+    window.irParaSistema = () => {
+        const user = auth.currentUser;
+        if (!user) return;
+        const emailAtual = (user.email || '').trim().toLowerCase();
+        window.location.href = emailAtual === 'helena.crocha@cfrmail.com'
+          ? 'https://sites.google.com/view/scfrhelena-/in%C3%ADcio'
+          : 'https://sites.google.com/view/scfr-inicio?usp=sharing';
+    };
     window.handleLogin = async () => {
         const email = document.getElementById('email').value.trim().toLowerCase();
         const pass = document.getElementById('password').value;
         const loginButton = document.querySelector('#view-login .btn');
-        const failureKey = localKey('failures', email);
-
-        if (!email || !pass) {
-            showLoginMessage('Preencha o e-mail e a senha.');
-            return;
-        }
+        if (!email || !pass) { showLoginMessage('Preencha o e-mail e a senha.'); return; }
         if (loginButton) { loginButton.disabled = true; loginButton.textContent = 'Entrando…'; }
         loginFlowActive = true;
         try {
             const credential = await signInWithEmailAndPassword(auth, email, pass);
             let accounts = JSON.parse(localStorage.getItem('saved_accounts') || '[]');
-            if (!accounts.includes(email)) {
-                accounts.push(email);
-                localStorage.setItem('saved_accounts', JSON.stringify(accounts));
-            }
+            if (!accounts.includes(email)) { accounts.push(email); localStorage.setItem('saved_accounts', JSON.stringify(accounts)); }
             document.getElementById('login-message').classList.add('hidden');
-            await completeLogin(credential.user);
+            await continueAfterLogin(credential.user);
         } catch (e) {
-            // Só uma falha de autenticação conta como senha/login malsucedido.
-            const authFailure = ['auth/invalid-credential', 'auth/wrong-password', 'auth/user-not-found',
-              'auth/invalid-email', 'auth/user-disabled', 'auth/too-many-requests'].includes(e.code);
-            let extra = '';
-            if (authFailure) {
-                const failures = Number(localStorage.getItem(failureKey) || 0) + 1;
-                localStorage.setItem(failureKey, String(failures));
-                extra = failures >= 2
-                  ? ' Você já teve duas tentativas malsucedidas neste navegador; a verificação facial será solicitada após autenticar com a senha correta.'
-                  : ' Uma segunda falha fará o sistema solicitar verificação facial após a próxima autenticação correta.';
-            }
             if (auth.currentUser && document.getElementById('view-dashboard').classList.contains('hidden')) {
                 try { await signOut(auth); } catch (_) {}
             }
-            showLoginMessage((authFailure
-              ? 'Não foi possível entrar. Confira seu e-mail e senha.'
-              : (e.message || 'Não foi possível concluir o login.')) + extra);
-            if (!authFailure) console.error('Erro no fluxo de login/verificação facial:', e);
+            showLoginMessage(e.code?.startsWith('auth/') ? 'Não foi possível entrar. Confira seu e-mail e senha.' : (e.message || 'Não foi possível concluir o login.'));
+            console.error('Erro no login/chave USB:', e);
         } finally {
             loginFlowActive = false;
             if (loginButton) { loginButton.disabled = false; loginButton.textContent = 'Entrar'; }
         }
     };
+    window.handleLogout = async () => { await signOut(auth); location.reload(); };
 
-    window.handleLogout = async () => {
-        await signOut(auth);
-        location.reload();
-    }
-
-    let loginFlowActive = false;
-    onAuthStateChanged(auth, (user) => {
+    onAuthStateChanged(auth, async user => {
         if (loginFlowActive) return;
         if (user) {
-            // O painel só é exibido por completeLogin/showDashboard após a checagem necessária.
-            if (!document.getElementById('face-modal').classList.contains('hidden')) return;
-            if (document.getElementById('view-dashboard').classList.contains('hidden')) {
-              document.getElementById('view-login').classList.remove('hidden');
-              document.getElementById('view-accounts').classList.add('hidden');
-            }
-        } else if (document.getElementById('face-modal').classList.contains('hidden')) {
+            if (!document.getElementById('usb-modal').classList.contains('hidden') || !document.getElementById('view-dashboard').classList.contains('hidden')) return;
+            try { await continueAfterLogin(user); }
+            catch (e) { console.error(e); showStep('view-login'); showLoginMessage('Não foi possível consultar a chave USB no Firebase. Confira as regras do banco de dados.'); }
+        } else if (document.getElementById('usb-modal').classList.contains('hidden')) {
             const accounts = JSON.parse(localStorage.getItem('saved_accounts') || '[]');
             if (accounts.length > 0) {
                 const list = document.getElementById('list-container'); list.innerHTML = '';
@@ -461,32 +302,24 @@
     });
 </script>
 
-<div id="face-modal" class="face-modal hidden" role="dialog" aria-modal="true" aria-labelledby="face-title">
+<div id="usb-modal" class="face-modal hidden" role="dialog" aria-modal="true" aria-labelledby="usb-title">
   <div class="face-panel">
-    <h2 id="face-title">Verificação facial</h2>
-    <p id="face-description">Posicione seu rosto no centro da câmera.</p>
-    <div id="face-message" class="system-message">A câmera será usada para verificar sua identidade.</div>
-    <video id="face-video" autoplay muted playsinline></video>
-    <p class="face-note">Privacidade: este sistema salva no Firebase apenas um vetor matemático de características faciais, não a fotografia. Esse vetor ainda é um dado biométrico sensível. Use somente com consentimento e regras de acesso restritas no Firebase.</p>
-    <button id="face-action" class="btn" onclick="window.confirmarRosto()">Verificar meu rosto</button>
-    <button type="button" class="btn btn-phone" onclick="window.mostrarOpcaoCodigo()">Usar código secreto</button>
-    <div id="secret-panel" class="secret-panel hidden">
-      <strong id="secret-code-title">Código secreto</strong>
-      <p id="secret-code-help" style="font-size:13px;line-height:1.4;margin:8px 0">Digite seu código secreto.</p>
-      <input id="secret-code-input" type="password" autocomplete="current-password" placeholder="Código secreto" />
-      <input id="secret-code-confirm" type="password" autocomplete="new-password" placeholder="Confirme o código (primeiro cadastro)" />
-      <button id="secret-code-submit" type="button" class="btn" onclick="window.confirmarCodigoSecreto()">Confirmar código</button>
+    <h2 id="usb-title">Chave de acesso SCFR</h2>
+    <p>Conecte o pendrive que contém sua chave de acesso.</p>
+    <div id="usb-message" class="system-message" role="status">A chave USB é obrigatória para continuar.</div>
+    <div id="usb-setup" class="secret-panel hidden">
+      <strong>Primeiro acesso: cadastrar pendrive</strong>
+      <p class="face-note">Crie seu arquivo de chave. Depois, mova o arquivo baixado para o pendrive e selecione-o para confirmar.</p>
+      <button id="usb-create-button" class="btn" type="button" onclick="window.criarChaveUSB()">Criar chave e baixar arquivo</button>
     </div>
-    <button type="button" class="btn btn-phone" onclick="window.mostrarOpcaoTelefone()">📱 Usar o telefone para reconhecer o rosto</button>
-    <div id="phone-panel" class="phone-panel hidden">
-      <strong>Continue pelo celular</strong>
-      <p>Abra a câmera do celular e leia este QR Code. O sistema será aberto no telefone; entre com a mesma conta e faça o reconhecimento usando a câmera do aparelho.</p>
-      <div id="phone-qr"></div>
-      <p id="phone-url"></p>
-      <button type="button" class="btn btn-secondary" onclick="window.copiarLinkTelefone()">Copiar link para abrir no celular</button>
-      <p>Se a página estiver incorporada no Google Sites e a câmera não abrir, hospede/abra o HTML diretamente por HTTPS e gere o QR novamente nessa página.</p>
+    <div id="usb-verify" class="secret-panel hidden">
+      <strong>Verificar pendrive</strong>
+      <p class="face-note">Clique em selecionar arquivo e escolha <b>SCFR_CHAVE_DE_ACESSO.scfrkey</b> dentro do pendrive.</p>
+      <input id="usb-file" type="file" accept=".scfrkey,.txt,text/plain" style="width:100%;padding:10px;margin:8px 0 14px;border:1px solid #cbd5e1;border-radius:8px" />
+      <button id="usb-validate-button" class="btn" type="button" onclick="window.validarChaveUSB()">Validar chave e entrar</button>
     </div>
-    <button class="btn btn-secondary" onclick="window.cancelarRosto()">Cancelar e sair</button>
+    <p class="face-note">Importante: é um pendrive comum com um arquivo de chave. Se alguém copiar esse arquivo, poderá fazer uma cópia da chave. Guarde o pendrive com cuidado.</p>
+    <button class="btn btn-secondary" type="button" onclick="window.cancelarChaveUSB()">Cancelar e sair</button>
   </div>
 </div>
 </body>
