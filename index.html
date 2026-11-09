@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Painel - SCFR | Chave USB</title>
+    <title>Painel - SCFR | Autenticação</title>
+    <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
     <style>
         :root { --primary: #1a73e8; --text: #202124; --border: #dadce0; }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Roboto, sans-serif; }
@@ -57,6 +58,10 @@
         .btn-phone { background:#0f766e; margin-top:9px; }
         .phone-panel { margin-top:14px; padding:14px; border:1px solid #cbd5e1; border-radius:12px; background:#f8fafc; text-align:center; }
         .phone-panel p { font-size:13px; line-height:1.45; margin:8px 0; }
+        .auth-choice { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:16px 0; }
+        .auth-choice .btn { min-height:76px; }
+        #face-video { width:100%; max-height:300px; object-fit:cover; background:#111827; border-radius:12px; margin:12px 0; transform:scaleX(-1); }
+        @media(max-width:480px){ .card,.face-panel { padding:24px 18px; } .auth-choice { grid-template-columns:1fr; } }
     .pair-code { font-size:28px; letter-spacing:7px; font-weight:800; color:#0f766e; margin:12px 0; }
     .phone-camera-page { width:min(520px, calc(100% - 28px)); background:#fff; padding:24px; border-radius:18px; box-shadow:0 12px 40px #0002; text-align:center; }
     .phone-camera-page video { width:100%; max-height:60vh; object-fit:cover; border-radius:12px; background:#111; margin:14px 0; transform:scaleX(-1); }
@@ -130,6 +135,9 @@
     const db = getDatabase(app);
     let pendingUser = null;
     let loginFlowActive = false;
+    let usbFirstSetup = false;
+    let cameraStream = null;
+    let faceModelsReady = false;
     const nomesUsuarios = {
         "eventosdehenrique@gmail.com": "Henrique Rocha",
         "helena.crocha@cfrmail.com": "Helena da Costa Rocha"
@@ -157,28 +165,121 @@
     }
     function openKeyGate(user, isFirstSetup) {
         pendingUser = user;
+        usbFirstSetup = isFirstSetup;
         document.getElementById('usb-modal').classList.remove('hidden');
         document.getElementById('view-accounts').classList.add('hidden');
         document.getElementById('view-login').classList.add('hidden');
         document.getElementById('view-dashboard').classList.add('hidden');
+        document.getElementById('auth-choice').classList.remove('hidden');
+        document.getElementById('usb-area').classList.add('hidden');
+        document.getElementById('face-area').classList.add('hidden');
         document.getElementById('usb-setup').classList.toggle('hidden', !isFirstSetup);
         document.getElementById('usb-verify').classList.toggle('hidden', isFirstSetup);
         document.getElementById('usb-file').value = '';
-        setKeyMessage(isFirstSetup
-          ? 'Primeiro acesso: crie sua chave e salve o arquivo diretamente no pendrive. Depois selecione o arquivo no pendrive para confirmar.'
-          : 'Conecte o pendrive e selecione o arquivo de chave SCFR para continuar.');
+        setKeyMessage('Escolha como deseja confirmar sua identidade: chave de acesso no pendrive ou reconhecimento facial.');
     }
     async function continueAfterLogin(user) {
         const snap = await get(keyRef(user.uid));
         openKeyGate(user, !snap.exists() || !snap.val()?.hash);
     }
+    function stopFaceCamera() {
+        if (cameraStream) { cameraStream.getTracks().forEach(track => track.stop()); cameraStream = null; }
+        const video = document.getElementById('face-video');
+        if (video) video.srcObject = null;
+    }
     function showDashboard(user) {
+        stopFaceCamera();
         document.getElementById('usb-modal').classList.add('hidden');
         const email = (user.email || '').trim().toLowerCase();
         document.getElementById('display-name').innerText = nomesUsuarios[email] || 'Usuário';
         document.getElementById('display-email').innerText = `(${user.email})`;
         showStep('view-dashboard');
     }
+
+
+    window.mostrarOpcaoUSB = () => {
+        stopFaceCamera();
+        document.getElementById('auth-choice').classList.add('hidden');
+        document.getElementById('face-area').classList.add('hidden');
+        document.getElementById('usb-area').classList.remove('hidden');
+        document.getElementById('usb-setup').classList.toggle('hidden', !usbFirstSetup);
+        document.getElementById('usb-verify').classList.toggle('hidden', usbFirstSetup);
+        setKeyMessage(usbFirstSetup
+          ? 'Primeiro acesso: crie a chave, salve no pendrive e depois selecione o arquivo para confirmar.'
+          : 'Conecte o pendrive e selecione o arquivo SCFR_CHAVE_DE_ACESSO.scfrkey.');
+    };
+    async function loadFaceModels() {
+        if (faceModelsReady) return;
+        for (let i = 0; i < 40 && !window.faceapi; i++) await new Promise(resolve => setTimeout(resolve, 150));
+        if (!window.faceapi) throw new Error('A biblioteca de reconhecimento facial não carregou. Verifique a internet.');
+        const base = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights';
+        await Promise.all([
+            faceapi.nets.tinyFaceDetector.loadFromUri(base),
+            faceapi.nets.faceLandmark68Net.loadFromUri(base),
+            faceapi.nets.faceRecognitionNet.loadFromUri(base)
+        ]);
+        faceModelsReady = true;
+    }
+    window.mostrarOpcaoFacial = async () => {
+        document.getElementById('auth-choice').classList.add('hidden');
+        document.getElementById('usb-area').classList.add('hidden');
+        document.getElementById('face-area').classList.remove('hidden');
+        const status = document.getElementById('face-message');
+        status.textContent = 'Carregando reconhecimento facial e câmera…';
+        const btn = document.getElementById('face-verify-button');
+        btn.disabled = true;
+        try {
+            await loadFaceModels();
+            if (!navigator.mediaDevices?.getUserMedia) throw new Error('Este navegador não liberou a câmera. Abra a página publicada em HTTPS e permita o acesso à câmera.');
+            cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+            const video = document.getElementById('face-video');
+            video.srcObject = cameraStream;
+            await video.play();
+            status.textContent = 'Câmera pronta. Centralize o rosto, mantenha boa iluminação e clique em Verificar rosto.';
+            btn.disabled = false;
+        } catch (e) {
+            status.textContent = e.message || 'Não foi possível iniciar a câmera.';
+            btn.disabled = true;
+            stopFaceCamera();
+        }
+    };
+    window.confirmarRosto = async () => {
+        const btn = document.getElementById('face-verify-button');
+        const status = document.getElementById('face-message');
+        btn.disabled = true;
+        try {
+            const user = pendingUser || auth.currentUser;
+            if (!user) throw new Error('Sessão expirada. Entre novamente.');
+            const video = document.getElementById('face-video');
+            if (!window.faceapi || !video.srcObject || video.readyState < 2) throw new Error('A câmera ainda não está pronta.');
+            status.textContent = 'Analisando rosto…';
+            const result = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 })).withFaceLandmarks().withFaceDescriptor();
+            if (!result) throw new Error('Não detectei um rosto. Ajuste a iluminação e tente novamente.');
+            const descriptor = Array.from(result.descriptor);
+            const profileRef = ref(db, `faceProfiles/${user.uid}`);
+            const snap = await get(profileRef);
+            if (!snap.exists() || !Array.isArray(snap.val()?.descriptor)) {
+                await set(profileRef, { descriptor, email: user.email || '', createdAt: Date.now(), method: 'face-api-descriptor' });
+                showDashboard(user);
+                return;
+            }
+            const stored = snap.val().descriptor;
+            if (stored.length !== descriptor.length) throw new Error('Cadastro facial incompatível. Solicite ao administrador a redefinição do cadastro facial.');
+            const distance = Math.sqrt(descriptor.reduce((sum, value, i) => sum + Math.pow(value - stored[i], 2), 0));
+            if (distance > 0.48) throw new Error('O rosto não corresponde ao cadastro. Acesso não autorizado.');
+            showDashboard(user);
+        } catch (e) {
+            status.textContent = e.message || 'Não foi possível verificar o rosto.';
+            btn.disabled = false;
+        }
+    };
+    window.voltarOpcoesAutenticacao = () => {
+        stopFaceCamera();
+        document.getElementById('face-area').classList.add('hidden');
+        document.getElementById('usb-area').classList.add('hidden');
+        document.getElementById('auth-choice').classList.remove('hidden');
+        setKeyMessage('Escolha chave de acesso ou reconhecimento facial.');
+    };
 
     window.criarChaveUSB = async () => {
         const btn = document.getElementById('usb-create-button');
@@ -233,6 +334,7 @@
     };
 
     window.cancelarChaveUSB = async () => {
+        stopFaceCamera();
         document.getElementById('usb-modal').classList.add('hidden');
         pendingUser = null;
         try { if (auth.currentUser) await signOut(auth); } catch (e) { console.error(e); }
@@ -304,22 +406,36 @@
 
 <div id="usb-modal" class="face-modal hidden" role="dialog" aria-modal="true" aria-labelledby="usb-title">
   <div class="face-panel">
-    <h2 id="usb-title">Chave de acesso SCFR</h2>
-    <p>Conecte o pendrive que contém sua chave de acesso.</p>
-    <div id="usb-message" class="system-message" role="status">A chave USB é obrigatória para continuar.</div>
-    <div id="usb-setup" class="secret-panel hidden">
-      <strong>Primeiro acesso: cadastrar pendrive</strong>
-      <p class="face-note">Crie seu arquivo de chave. Depois, mova o arquivo baixado para o pendrive e selecione-o para confirmar.</p>
-      <button id="usb-create-button" class="btn" type="button" onclick="window.criarChaveUSB()">Criar chave e baixar arquivo</button>
+    <h2 id="usb-title">Confirme sua identidade</h2>
+    <p>Login realizado. Escolha uma das opções obrigatórias para liberar o SCFR.</p>
+    <div id="usb-message" class="system-message" role="status">Escolha uma forma de autenticação.</div>
+    <div id="auth-choice" class="auth-choice">
+      <button class="btn" type="button" onclick="window.mostrarOpcaoUSB()">🔑 Chave de acesso (pendrive)</button>
+      <button class="btn btn-phone" type="button" onclick="window.mostrarOpcaoFacial()">📷 Reconhecimento facial</button>
     </div>
-    <div id="usb-verify" class="secret-panel hidden">
-      <strong>Verificar pendrive</strong>
-      <p class="face-note">Clique em selecionar arquivo e escolha <b>SCFR_CHAVE_DE_ACESSO.scfrkey</b> dentro do pendrive.</p>
-      <input id="usb-file" type="file" accept=".scfrkey,.txt,text/plain" style="width:100%;padding:10px;margin:8px 0 14px;border:1px solid #cbd5e1;border-radius:8px" />
-      <button id="usb-validate-button" class="btn" type="button" onclick="window.validarChaveUSB()">Validar chave e entrar</button>
+    <div id="usb-area" class="hidden">
+      <div id="usb-setup" class="secret-panel hidden">
+        <strong>Primeiro acesso: cadastrar pendrive</strong>
+        <p class="face-note">Crie seu arquivo de chave. Depois, mova o arquivo baixado para o pendrive e selecione-o para confirmar.</p>
+        <button id="usb-create-button" class="btn" type="button" onclick="window.criarChaveUSB()">Criar chave e baixar arquivo</button>
+      </div>
+      <div id="usb-verify" class="secret-panel hidden">
+        <strong>Verificar pendrive</strong>
+        <p class="face-note">Selecione <b>SCFR_CHAVE_DE_ACESSO.scfrkey</b> dentro do pendrive.</p>
+        <input id="usb-file" type="file" accept=".scfrkey,.txt,text/plain" style="width:100%;padding:10px;margin:8px 0 14px;border:1px solid #cbd5e1;border-radius:8px" />
+        <button id="usb-validate-button" class="btn" type="button" onclick="window.validarChaveUSB()">Validar chave e entrar</button>
+      </div>
+      <button class="btn btn-secondary" type="button" onclick="window.voltarOpcoesAutenticacao()">Voltar às opções</button>
     </div>
-    <p class="face-note">Importante: é um pendrive comum com um arquivo de chave. Se alguém copiar esse arquivo, poderá fazer uma cópia da chave. Guarde o pendrive com cuidado.</p>
-    <button class="btn btn-secondary" type="button" onclick="window.cancelarChaveUSB()">Cancelar e sair</button>
+    <div id="face-area" class="hidden">
+      <video id="face-video" autoplay muted playsinline></video>
+      <div id="face-message" class="system-message" role="status">A câmera será iniciada após sua autorização.</div>
+      <button id="face-verify-button" class="btn" type="button" disabled onclick="window.confirmarRosto()">Verificar rosto</button>
+      <p class="face-note">Na primeira utilização, o rosto será cadastrado após a confirmação da senha. O sistema salva um descritor biométrico no Firebase, não a fotografia. Esse dado é sensível e deve ser protegido.</p>
+      <button class="btn btn-secondary" type="button" onclick="window.voltarOpcoesAutenticacao()">Voltar às opções</button>
+    </div>
+    <p class="face-note">Cancelar encerra a sessão e bloqueia a entrada. O pendrive comum usa um arquivo que pode ser copiado; não equivale a uma chave criptográfica FIDO2.</p>
+    <button class="btn btn-danger" type="button" onclick="window.cancelarChaveUSB()">Cancelar e sair</button>
   </div>
 </div>
 </body>
