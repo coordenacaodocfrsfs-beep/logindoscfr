@@ -176,9 +176,11 @@
         document.getElementById('usb-setup').classList.toggle('hidden', !isFirstSetup);
         document.getElementById('usb-verify').classList.toggle('hidden', isFirstSetup);
         document.getElementById('usb-file').value = '';
-        setKeyMessage('Escolha como deseja confirmar sua identidade: chave de acesso no pendrive ou reconhecimento facial.');
+        setKeyMessage('Escolha uma opção para confirmar sua identidade: reconhecer rosto ou usar a chave de acesso no pendrive.');
     }
     async function continueAfterLogin(user) {
+        // A senha valida apenas a primeira etapa. O painel só abre depois
+        // que o usuário concluir uma das duas verificações abaixo.
         const snap = await get(keyRef(user.uid));
         openKeyGate(user, !snap.exists() || !snap.val()?.hash);
     }
@@ -407,11 +409,11 @@
 <div id="usb-modal" class="face-modal hidden" role="dialog" aria-modal="true" aria-labelledby="usb-title">
   <div class="face-panel">
     <h2 id="usb-title">Confirme sua identidade</h2>
-    <p>Login realizado. Escolha uma das opções obrigatórias para liberar o SCFR.</p>
+    <p>E-mail e senha confirmados! Agora escolha uma segunda etapa obrigatória: reconhecer o rosto ou validar sua chave de acesso.</p>
     <div id="usb-message" class="system-message" role="status">Escolha uma forma de autenticação.</div>
     <div id="auth-choice" class="auth-choice">
+      <button class="btn btn-phone" type="button" onclick="window.mostrarOpcaoFacial()">📷 Reconhecer rosto</button>
       <button class="btn" type="button" onclick="window.mostrarOpcaoUSB()">🔑 Chave de acesso (pendrive)</button>
-      <button class="btn btn-phone" type="button" onclick="window.mostrarOpcaoFacial()">📷 Reconhecimento facial</button>
     </div>
     <div id="usb-area" class="hidden">
       <div id="usb-setup" class="secret-panel hidden">
